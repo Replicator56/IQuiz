@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Category {
+  id        Int        @id @default(autoincrement())
+  name      String     @db.VarChar(100)
+  questions Question[]
+
+  @@map("categories")
+}
+
+model Question {
+  id             Int      @id @default(autoincrement())
+  questionNormal String   @map("question_normal") @db.Text
+  questionFalc   String   @map("question_falc") @db.Text
+  explanation    String   @db.Text
+  categoryId     Int      @map("category_id")
+  category       Category @relation(fields: [categoryId], references: [id], onUpdate: Cascade, onDelete: Restrict)
+  answers        Answer[]
+
+  @@index([categoryId])
+  @@map("questions")
+}
+
+model Answer {
+  id         Int      @id @default(autoincrement())
+  text       String   @db.Text
+  isCorrect  Boolean  @map("is_correct")
+  questionId Int      @map("question_id")
+  question   Question @relation(fields: [questionId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("answers")
+}
