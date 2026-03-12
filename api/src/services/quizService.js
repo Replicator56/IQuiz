@@ -1,10 +1,11 @@
 import { randomUUID } from "crypto";
-import { categories } from "../mocks/categories.mock.js";
-import { questions } from "../mocks/questions.mock.js";
-import { attempts } from "../mocks/attempts.mock.js";
+import pool from "../config/database.js";
 
 export async function fetchCategories() {
-  return [...categories].sort((a, b) => a.name.localeCompare(b.name));
+  const result = await pool.query(
+    "SELECT id, name FROM categories ORDER BY name ASC"
+  );
+  return result.rows;
 }
 
 export async function createQuiz({ readingMode, gameMode, categoryId }) {
@@ -24,28 +25,95 @@ export async function createQuiz({ readingMode, gameMode, categoryId }) {
 
   const nbQuestions = gameMode === "practice" ? 4 : 10;
 
-  const filteredQuestions =
-    gameMode === "practice"
-      ? questions.filter((question) => question.categoryId === Number(categoryId))
-      : questions;
+  const params = [];
+  let query = `
+    SELECT
+      q.id,
+      q.category_id,
+      q.question_normal,
+      q.question_falc,
+      q.explanation
+    FROM questions q
+  `;
 
-  if (filteredQuestions.length < nbQuestions) {
+  if (gameMode === "practice") {
+    query += ` WHERE q.category_id = $1`;
+    params.push(Number(categoryId));
+  }
+
+  query += ` ORDER BY RANDOM() LIMIT ${nbQuestions}`;
+
+  const questionsResult = await pool.query(query, params);
+  const selectedQuestions = questionsResult.rows;
+
+  if (selectedQuestions.length < nbQuestions) {
     throw new Error("NOT_ENOUGH_QUESTIONS");
   }
 
-  const selectedQuestions = shuffleArray(filteredQuestions).slice(0, nbQuestions);
-  const attemptId = randomUUID();
+  const questionIds = selectedQuestions.map((question) => question.id);
 
-  attempts.push({
-    id: attemptId,
-    readingMode,
-    gameMode,
-    categoryId: categoryId ? Number(categoryId) : null,
-    questionIds: selectedQuestions.map((question) => question.id),
-    answers: [],
-    status: "in_progress",
-    createdAt: new Date().toISOString(),
-  });
+  const answersResult = await pool.query(
+    `
+    SELECT
+      id,
+      question_id,
+      text
+    FROM answers
+    WHERE question_id = ANY($1::int[])
+    `,
+    [questionIds]
+  );
+
+  const answersByQuestionId = new Map();
+
+  for (const answer of answersResult.rows) {
+    if (!answersByQuestionId.has(answer.question_id)) {
+      answersByQuestionId.set(answer.question_id, []);
+    }
+
+    answersByQuestionId.get(answer.question_id).push({
+      id: answer.id,
+      text: answer.text,
+    });
+  }
+
+  const attemptId = randomUUID();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `
+      INSERT INTO attempts (id, reading_mode, game_mode, category_id, status)
+      VALUES ($1, $2, $3, $4, $5)
+      `,
+      [
+        attemptId,
+        readingMode,
+        gameMode,
+        categoryId ? Number(categoryId) : null,
+        "in_progress",
+      ]
+    );
+
+    for (let index = 0; index < selectedQuestions.length; index += 1) {
+      await client.query(
+        `
+        INSERT INTO attempt_questions (attempt_id, question_id, display_order)
+        VALUES ($1, $2, $3)
+        `,
+        [attemptId, selectedQuestions[index].id, index + 1]
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 
   return {
     attemptId,
@@ -54,14 +122,9 @@ export async function createQuiz({ readingMode, gameMode, categoryId }) {
       id: question.id,
       text:
         readingMode === "falc"
-          ? question.questionFalc
-          : question.questionNormal,
-      answers: shuffleArray(
-        question.answers.map((answer) => ({
-          id: answer.id,
-          text: answer.text,
-        }))
-      ),
+          ? question.question_falc
+          : question.question_normal,
+      answers: shuffleArray(answersByQuestionId.get(question.id) || []),
     })),
   };
 }
@@ -85,7 +148,16 @@ export async function submitAnswerForAttempt({ attemptId, questionId, answerIds 
     throw new Error("INVALID_PARAMS");
   }
 
-  const attempt = attempts.find((item) => item.id === attemptId);
+  const attemptResult = await pool.query(
+    `
+    SELECT id, status
+    FROM attempts
+    WHERE id = $1
+    `,
+    [attemptId]
+  );
+
+  const attempt = attemptResult.rows[0];
 
   if (!attempt) {
     throw new Error("ATTEMPT_NOT_FOUND");
@@ -95,25 +167,62 @@ export async function submitAnswerForAttempt({ attemptId, questionId, answerIds 
     throw new Error("ATTEMPT_ALREADY_FINISHED");
   }
 
-  if (!attempt.questionIds.includes(normalizedQuestionId)) {
+  const attemptQuestionResult = await pool.query(
+    `
+    SELECT question_id
+    FROM attempt_questions
+    WHERE attempt_id = $1 AND question_id = $2
+    `,
+    [attemptId, normalizedQuestionId]
+  );
+
+  if (attemptQuestionResult.rows.length === 0) {
     throw new Error("QUESTION_NOT_IN_ATTEMPT");
   }
 
-  const alreadyAnswered = attempt.answers.some(
-    (answer) => answer.questionId === normalizedQuestionId
+  const alreadyAnsweredResult = await pool.query(
+    `
+    SELECT 1
+    FROM attempt_answers
+    WHERE attempt_id = $1 AND question_id = $2
+    LIMIT 1
+    `,
+    [attemptId, normalizedQuestionId]
   );
 
-  if (alreadyAnswered) {
+  if (alreadyAnsweredResult.rows.length > 0) {
     throw new Error("QUESTION_ALREADY_ANSWERED");
   }
 
-  const question = questions.find((item) => item.id === normalizedQuestionId);
+  const questionResult = await pool.query(
+    `
+    SELECT id, explanation
+    FROM questions
+    WHERE id = $1
+    `,
+    [normalizedQuestionId]
+  );
+
+  const question = questionResult.rows[0];
 
   if (!question) {
     throw new Error("QUESTION_NOT_FOUND");
   }
 
-  const validAnswerIds = question.answers.map((answer) => answer.id);
+  const answersResult = await pool.query(
+    `
+    SELECT id, is_correct
+    FROM answers
+    WHERE question_id = $1
+    `,
+    [normalizedQuestionId]
+  );
+
+  if (answersResult.rows.length === 0) {
+    throw new Error("QUESTION_NOT_FOUND");
+  }
+
+  const validAnswerIds = answersResult.rows.map((answer) => answer.id);
 
   const hasInvalidAnswer = normalizedAnswerIds.some(
     (answerId) => !validAnswerIds.includes(answerId)
@@ -123,8 +232,8 @@ export async function submitAnswerForAttempt({ attemptId, questionId, answerIds 
     throw new Error("INVALID_ANSWER_FOR_QUESTION");
   }
 
-  const correctAnswerIds = question.answers
-    .filter((answer) => answer.isCorrect)
+  const correctAnswerIds = answersResult.rows
+    .filter((answer) => answer.is_correct)
     .map((answer) => answer.id)
     .sort((a, b) => a - b);
 
@@ -136,18 +245,53 @@ export async function submitAnswerForAttempt({ attemptId, questionId, answerIds 
       (answerId, index) => answerId === correctAnswerIds[index]
     );
 
-  attempt.answers.push({
-    questionId: normalizedQuestionId,
-    answerIds: sortedUserAnswerIds,
-    ok,
-  });
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    for (const answerId of sortedUserAnswerIds) {
+      await client.query(
+        `
+        INSERT INTO attempt_answers (attempt_id, question_id, answer_id)
+        VALUES ($1, $2, $3)
+        `,
+        [attemptId, normalizedQuestionId, answerId]
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const answeredQuestionsResult = await pool.query(
+    `
+    SELECT COUNT(DISTINCT question_id) AS count
+    FROM attempt_answers
+    WHERE attempt_id = $1
+    `,
+    [attemptId]
+  );
+
+  const totalQuestionsResult = await pool.query(
+    `
+    SELECT COUNT(*) AS count
+    FROM attempt_questions
+    WHERE attempt_id = $1
+    `,
+    [attemptId]
+  );
 
   return {
     ok,
     correctAnswerIds,
     explanation: question.explanation,
-    answeredQuestions: attempt.answers.length,
-    totalQuestions: attempt.questionIds.length,
+    answeredQuestions: Number(answeredQuestionsResult.rows[0].count),
+    totalQuestions: Number(totalQuestionsResult.rows[0].count),
   };
 }
 
@@ -156,7 +300,16 @@ export async function finishQuiz({ attemptId }) {
     throw new Error("INVALID_PARAMS");
   }
 
-  const attempt = attempts.find((item) => item.id === attemptId);
+  const attemptResult = await pool.query(
+    `
+    SELECT id, status
+    FROM attempts
+    WHERE id = $1
+    `,
+    [attemptId]
+  );
+
+  const attempt = attemptResult.rows[0];
 
   if (!attempt) {
     throw new Error("ATTEMPT_NOT_FOUND");
@@ -166,19 +319,77 @@ export async function finishQuiz({ attemptId }) {
     throw new Error("ATTEMPT_ALREADY_FINISHED");
   }
 
-  const corrections = attempt.questionIds.map((questionId) => {
-    const question = questions.find((item) => item.id === questionId);
-    const userAnswer = attempt.answers.find((item) => item.questionId === questionId);
+  const questionsResult = await pool.query(
+    `
+    SELECT
+      q.id,
+      q.explanation
+    FROM attempt_questions aq
+    JOIN questions q ON q.id = aq.question_id
+    WHERE aq.attempt_id = $1
+    ORDER BY aq.display_order
+    `,
+    [attemptId]
+  );
 
-    const correctAnswerIds = question.answers
-      .filter((answer) => answer.isCorrect)
-      .map((answer) => answer.id)
-      .sort((a, b) => a - b);
+  const answersResult = await pool.query(
+    `
+    SELECT
+      question_id,
+      id AS answer_id,
+      is_correct
+    FROM answers
+    WHERE question_id = ANY(
+      SELECT question_id
+      FROM attempt_questions
+      WHERE attempt_id = $1
+    )
+    `,
+    [attemptId]
+  );
+
+  const userAnswersResult = await pool.query(
+    `
+    SELECT question_id, answer_id
+    FROM attempt_answers
+    WHERE attempt_id = $1
+    `,
+    [attemptId]
+  );
+
+  const correctAnswersByQuestion = new Map();
+  const userAnswersByQuestion = new Map();
+
+  for (const row of answersResult.rows) {
+    if (!correctAnswersByQuestion.has(row.question_id)) {
+      correctAnswersByQuestion.set(row.question_id, []);
+    }
+
+    if (row.is_correct) {
+      correctAnswersByQuestion.get(row.question_id).push(row.answer_id);
+    }
+  }
+
+  for (const row of userAnswersResult.rows) {
+    if (!userAnswersByQuestion.has(row.question_id)) {
+      userAnswersByQuestion.set(row.question_id, []);
+    }
+
+    userAnswersByQuestion.get(row.question_id).push(row.answer_id);
+  }
+
+  const corrections = questionsResult.rows.map((question) => {
+    const correctAnswerIds = (correctAnswersByQuestion.get(question.id) || []).sort((a, b) => a - b);
+    const userAnswerIds = (userAnswersByQuestion.get(question.id) || []).sort((a, b) => a - b);
+
+    const ok =
+      userAnswerIds.length === correctAnswerIds.length &&
+      userAnswerIds.every((id, index) => id === correctAnswerIds[index]);
 
     return {
-      questionId,
-      ok: userAnswer ? userAnswer.ok : false,
-      userAnswerIds: userAnswer ? userAnswer.answerIds : [],
+      questionId: question.id,
+      ok,
+      userAnswerIds,
       correctAnswerIds,
       explanation: question.explanation,
     };
@@ -186,13 +397,19 @@ export async function finishQuiz({ attemptId }) {
 
   const score = corrections.filter((item) => item.ok).length;
 
-  attempt.status = "finished";
-  attempt.finishedAt = new Date().toISOString();
+  await pool.query(
+    `
+    UPDATE attempts
+    SET status = 'finished', finished_at = NOW()
+    WHERE id = $1
+    `,
+    [attemptId]
+  );
 
   return {
-    attemptId: attempt.id,
+    attemptId,
     score,
-    total: attempt.questionIds.length,
+    total: corrections.length,
     corrections,
   };
 }

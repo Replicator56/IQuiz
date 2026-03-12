@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
-    "express": "^4.22.1"
+    "dotenv": "^17.3.1",
+    "express": "^4.22.1",
+    "pg": "^8.20.0"
   },
   "prisma": {
     "schema": "../database/schema/schema.prisma"
