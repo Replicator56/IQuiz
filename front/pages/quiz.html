@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Quiz</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+
+body{
+background:#f3f4f6;
+height:100vh;
+display:flex;
+justify-content:center;
+align-items:center;
+}
+
+.quiz-card{
+max-width:700px;
+width:100%;
+border-radius:12px;
+}
+
+.answer-option{
+border:1px solid #ddd;
+border-radius:10px;
+padding:12px;
+cursor:pointer;
+transition:0.2s;
+display:flex;
+align-items:center;
+gap:10px;
+}
+
+.answer-option:hover{
+background:#f7f8ff;
+border-color:#4f6df5;
+}
+
+.answer-option.selected{
+background:#e7edff;
+border-color:#4f6df5;
+}
+
+.answer-option.correct{
+background:#2ea44f;
+color:white;
+border-color:#2ea44f;
+}
+
+.answer-option.wrong{
+background:#e63946;
+color:white;
+border-color:#e63946;
+}
+
+.answer-option.disabled{
+pointer-events:none;
+opacity:0.9;
+}
+
+.answer-option input{
+margin-right:10px;
+}
+.info-card{
+background:#f4f7ff;
+border:1px solid #d6e2ff;
+border-radius:10px;
+padding:15px;
+}
+
+.info-title{
+font-weight:600;
+color:#2b3a67;
+display:flex;
+align-items:center;
+gap:8px;
+margin-bottom:8px;
+}
+
+.info-icon{
+font-size:18px;
+}
+
+.info-text{
+color:#444;
+font-size:14px;
+line-height:1.6;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="card quiz-card shadow p-4">
+
+<div class="text-muted mb-2">
+Institutions
+</div>
+
+<h4 class="mb-4">
+Quelle est la résidence du président de la République ?
+</h4>
+
+<form id="quizForm">
+
+<div class="row g-3">
+
+<div class="col-md-6">
+<label class="answer-option w-100">
+<input type="checkbox" name="answer" value="versailles" data-correct="false">
+Château de Versailles
+</label>
+</div>
+
+<div class="col-md-6">
+<label class="answer-option w-100">
+<input type="checkbox" name="answer" value="matignon" data-correct="false">
+Hôtel de Matignon
+</label>
+</div>
+
+<div class="col-md-6">
+<label class="answer-option w-100">
+<input type="checkbox" name="answer" value="elysee" data-correct="true">
+L’Elysée
+</label>
+</div>
+
+<div class="col-md-6">
+<label class="answer-option w-100">
+<input type="checkbox" name="answer" value="mairie" data-correct="false">
+Mairie de Paris
+</label>
+</div>
+
+</div>
+
+<button id="validateBtn" class="btn btn-primary w-100 mt-4">
+Valider
+</button>
+
+</form>
+
+<div id="explanationBox" class="info-card mt-4 d-none">
+
+<div class="info-title">
+<span class="info-icon">💡</span>
+Le saviez-vous ?
+</div>
+
+<div class="info-text">
+
+<p>
+Le château de Versailles était la résidence du roi Louis XIV.
+</p>
+
+<p>
+La résidence du président de la République est le palais de l’Élysée.
+</p>
+
+</div>
+
+</div>
+
+<button id="nextBtn" class="btn btn-outline-primary w-100 mt-2 d-none">
+Question suivante
+</button>
+
+</div>
+
+<script>
+
+const options = document.querySelectorAll(".answer-option")
+
+options.forEach(option => {
+
+const checkbox = option.querySelector("input")
+
+checkbox.addEventListener("change", () => {
+
+if(checkbox.checked){
+option.classList.add("selected")
+}else{
+option.classList.remove("selected")
+}
+
+})
+
+})
+
+document.getElementById("quizForm").addEventListener("submit",function(e){
+
+e.preventDefault()
+
+const answers = document.querySelectorAll("input[name='answer']")
+
+answers.forEach(input=>{
+
+let parent = input.closest(".answer-option")
+let correct = input.dataset.correct === "true"
+
+if(input.checked && !correct){
+parent.classList.add("wrong")
+}
+
+if(correct){
+parent.classList.add("correct")
+}
+
+parent.classList.add("disabled")
+
+})
+
+document.getElementById("explanationBox").classList.remove("d-none")
+document.getElementById("nextBtn").classList.remove("d-none")
+
+const validateBtn = document.getElementById("validateBtn")
+
+validateBtn.disabled = true
+validateBtn.classList.remove("btn-primary")
+validateBtn.classList.add("btn-secondary")
+})
+
+</script>
+
+</body>
+</html>
